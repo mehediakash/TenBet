@@ -172,7 +172,7 @@ const applySelectedPromotionIfNeeded = async (deposit, source = "payment") => {
 };
 
 const buildFrontendUrl = (path, params = {}) => {
-  const baseUrl = "http://localhost:5173";
+  const baseUrl = "http://tenbet.live";
   const url = new URL(path, baseUrl);
   Object.entries(params).forEach(([key, value]) => {
     if (value) url.searchParams.append(key, value);

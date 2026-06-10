@@ -75,13 +75,10 @@ const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
       process.env.CLIENT_URL,
-      "https://gaming.kinobazar.com/",
-      "https://gaming.kinobazar.com",
-      "https://dashboard10xbet.netlify.app",
-      "https://10xbet.live/",
-      "https://10xbet.live",
-      "https://10xbet.live",
-      "https://10xbet.live/",
+      "https://server.tenbet.live/",
+      "https://server.tenbet.live",
+      "https://admin.tenbet.live",
+      "https://tenbet.live",
       "http://localhost:3000",
       "http://localhost:5173",
       "http://localhost:5174",

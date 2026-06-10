@@ -2,7 +2,7 @@ import axios from "axios";
 
 // const baseURL =  'https://node-api-server-123-f5gsegd3ahcqhtgs.southeastasia-01.azurewebsites.net';
 // const baseURL = "https://gaming.kinobazar.com";
-const baseURL = "http://localhost:5000";
+const baseURL = "https://server.tenbet.live";
 
 const axiosInstance = axios.create({
   baseURL,

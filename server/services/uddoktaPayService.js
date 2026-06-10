@@ -1,7 +1,7 @@
 const axios = require("axios");
 
-const UDDOKTAPAY_BASE_URL = "https://gamebetx.paymently.io/api";
-const UDDOKTAPAY_API_KEY = "zqiIkRGTjyMJUD23zKsBmmMCtsXJaw3QHdG7vPzM";
+const UDDOKTAPAY_BASE_URL = "https://tenbet.paymently.io/api";
+const UDDOKTAPAY_API_KEY = "ScIZXNEsBDXWNf6ySgYyjtPUq2oBdlPXpmBaCeiQ";
 
 const client = axios.create({
   baseURL: UDDOKTAPAY_BASE_URL,
