@@ -1,0 +1,1105 @@
+// DepositPage.jsx
+import React, { useEffect, useMemo, useState, useRef } from "react";
+import { useLocation } from "react-router-dom";
+import { useDispatch, useSelector } from "react-redux";
+import walletService from "../Components/services/walletService";
+import paymentService from "../Components/services/paymentService";
+import promoService from "../Components/services/promoService";
+import SEO from "../Components/SEO/SEO";
+import { getSEO } from "../Components/SEO/seoData";
+import { useLanguage } from "../context/LanguageContext";
+import { useTranslation } from "react-i18next";
+import {
+  clearSelectedPromotion,
+  setSelectedPromotion,
+} from "../Components/store/promotionSlice";
+
+const DepositPage = () => {
+  const PAYMENT_AGENT_NUMBERS = {
+    bkash: "01611111111",
+    nagad: "01611111111",
+    default: "01611111111",
+  };
+
+  const { t } = useTranslation();
+
+  const fallbackPaymentMethods = useMemo(
+    () => [
+      {
+        id: "uddoktapay",
+        name: "UddoktaPay",
+        logo: "https://gamebetx.paymently.io/favicon.ico",
+        color: "bg-white",
+        popular: true,
+        isGateway: true,
+      },
+      {
+        id: "bkash_manual",
+        name: "bKash (Manual)",
+        logo: "https://i.ibb.co.com/Mk0tTSX0/5db8198b939c391189fd7be0038c16b6.png",
+        color: "bg-white",
+        popular: false,
+        toNumber: PAYMENT_AGENT_NUMBERS.bkash,
+        isGateway: false,
+      },
+      {
+        id: "nagad_manual",
+        name: "Nagad (Manual)",
+        logo: "https://images.seeklogo.com/logo-png/35/1/nagad-logo-png_seeklogo-355240.png",
+        color: "bg-orange-600",
+        popular: false,
+        toNumber: PAYMENT_AGENT_NUMBERS.nagad,
+        isGateway: false,
+      },
+      {
+        id: "rocket_manual",
+        name: "Rocket (Manual)",
+        logo: "https://images.seeklogo.com/logo-png/31/1/dutch-bangla-rocket-logo-png_seeklogo-317692.png",
+        color: "bg-purple-600",
+        toNumber: PAYMENT_AGENT_NUMBERS.default,
+        isGateway: false,
+      },
+      {
+        id: "bank_card",
+        name: "Bank Transfer",
+        logo: "https://cdn-icons-png.flaticon.com/512/9840/9840614.png",
+        color: "bg-gray-700",
+        toNumber: PAYMENT_AGENT_NUMBERS.default,
+        isGateway: false,
+      },
+    ],
+    [],
+  );
+
+  const [paymentMethods, setPaymentMethods] = useState(fallbackPaymentMethods);
+  const [activeMethod, setActiveMethod] = useState(
+    fallbackPaymentMethods[0]?.id || "uddoktapay",
+  );
+  const [depositAmount, setDepositAmount] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [transactionId, setTransactionId] = useState("");
+  const [proofImage, setProofImage] = useState(null);
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [loadingBalance, setLoadingBalance] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [formStatus, setFormStatus] = useState(null);
+  const token = useSelector((state) => state.auth?.token);
+
+  // Promo Code States
+  const [promoCode, setPromoCode] = useState("");
+  const [promoApplied, setPromoApplied] = useState(false);
+  const [promoLoading, setPromoLoading] = useState(false);
+  const [promoData, setPromoData] = useState(null);
+  const [promoError, setPromoError] = useState(null);
+  const [promotionModalOpen, setPromotionModalOpen] = useState(false);
+  const [availablePromotions, setAvailablePromotions] = useState([]);
+  const [promotionsLoading, setPromotionsLoading] = useState(false);
+  const [promotionsError, setPromotionsError] = useState(null);
+  const dispatch = useDispatch();
+  const selectedPromotion = useSelector(
+    (state) => state.promotionSelection?.selectedPromotion || null,
+  );
+  const [pendingPromotion, setPendingPromotion] = useState(selectedPromotion);
+  const location = useLocation();
+
+  const formatPromoBonus = (promo) => {
+    if (!promo) return "Special offer";
+    const bonusConfig = promo.bonusConfig || {};
+    const percentage =
+      typeof bonusConfig.bonusPercent === "number"
+        ? bonusConfig.bonusPercent
+        : promo.percentage;
+    const fixedBonus =
+      typeof bonusConfig.fixedBonusAmount === "number"
+        ? bonusConfig.fixedBonusAmount
+        : promo.bonusAmount;
+
+    if (typeof percentage === "number" && percentage > 0) {
+      return `${percentage}% bonus`;
+    }
+    if (typeof fixedBonus === "number" && fixedBonus > 0) {
+      return `৳${fixedBonus} bonus`;
+    }
+    return "Special offer";
+  };
+
+  const formatPromoExpiry = (validUntil) => {
+    if (!validUntil) return "No expiry";
+    const expiryDate = new Date(validUntil);
+    if (Number.isNaN(expiryDate.getTime())) return "No expiry";
+    return expiryDate.toLocaleDateString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+  };
+
+  useEffect(() => {
+    setPendingPromotion(selectedPromotion);
+  }, [selectedPromotion]);
+
+  // Read selected promotion from router state or sessionStorage
+  useEffect(() => {
+    try {
+      const incoming = location?.state?.selectedPromotion;
+      if (incoming) {
+        // set local pending and promoCode only; final selection is applied
+        // by the promotions fetch effect which prefers route state
+        setPendingPromotion(incoming);
+        setPromoCode(
+          incoming.promoCode ? incoming.promoCode.toUpperCase() : "",
+        );
+        setFormStatus({
+          type: "info",
+          text: `${incoming.title || incoming.promoCode || "Promotion"} selected from Promotions`,
+        });
+        return;
+      }
+    } catch (e) {
+      // ignore parse errors
+    }
+    // run only on mount
+  }, []);
+
+  // Auto-apply promo code from promotions page
+  useEffect(() => {
+    const pendingPromo = localStorage.getItem("pendingPromoCode");
+    if (pendingPromo) {
+      setPromoCode(pendingPromo);
+      setPendingPromotion({ code: pendingPromo, name: pendingPromo });
+      localStorage.removeItem("pendingPromoCode");
+      // Show notification
+      setFormStatus({
+        type: "info",
+        text: `Promo code "${pendingPromo}" is ready to apply. Enter deposit amount and click Apply.`,
+      });
+      // Scroll to promo section after a short delay
+      setTimeout(() => {
+        const promoSection = document.getElementById("promo-section");
+        if (promoSection) {
+          promoSection.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }, 500);
+    }
+  }, []);
+
+  const renderLogo = (logo, size = "md") => {
+    const isUrl = logo?.startsWith("http");
+    const sizeClasses = {
+      sm: "w-10 h-10",
+      md: "w-16 h-16",
+      lg: "w-16 h-16",
+    };
+
+    if (isUrl) {
+      return (
+        <img
+          src={logo}
+          alt="Payment Logo"
+          className={`${sizeClasses[size]} object-contain overflow-hidden`}
+        />
+      );
+    }
+    return <span className="text-xl font-bold">{logo}</span>;
+  };
+
+  const extractBalance = (payload) => {
+    if (!payload) return 0;
+    if (typeof payload.main === "number") return payload.main;
+    if (typeof payload.balance === "number") return payload.balance;
+    if (payload.wallet && typeof payload.wallet === "object") {
+      return (
+        payload.wallet.main ??
+        payload.wallet.balance ??
+        Object.values(payload.wallet).find((v) => typeof v === "number") ??
+        0
+      );
+    }
+    if (typeof payload === "number") return payload;
+    return 0;
+  };
+
+  const formatAmount = (amount) => {
+    const num = Number(amount || 0);
+    return num.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    if (!token) {
+      setWalletBalance(0);
+      return undefined;
+    }
+
+    (async () => {
+      console.debug("DepositPage: fetching promotions for deposit selector");
+      setLoadingBalance(true);
+      try {
+        const res = await walletService.getBalance();
+        const payload = res?.data?.data ?? res?.data;
+        if (mounted) setWalletBalance(extractBalance(payload));
+      } catch (e) {
+        if (mounted) setWalletBalance(0);
+      } finally {
+        if (mounted) setLoadingBalance(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      try {
+        const res = await walletService.getDepositMethods();
+        const payload = res?.data?.data ?? res?.data;
+        if (Array.isArray(payload) && payload.length) {
+          // Keep fallback payment methods
+        } else if (mounted) {
+          setPaymentMethods(fallbackPaymentMethods);
+        }
+      } catch (e) {
+        if (mounted) setPaymentMethods(fallbackPaymentMethods);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [fallbackPaymentMethods]);
+
+  const appliedSelectionRef = useRef(false);
+
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      try {
+        setPromotionsLoading(true);
+        setPromotionsError(null);
+        const response = await promoService.getActivePromotions();
+        const payload = response?.data?.data ?? response?.data;
+        const promotions = Array.isArray(payload) ? payload : [];
+        if (mounted) {
+          setAvailablePromotions(promotions);
+
+          const navPromo = location?.state?.selectedPromotion;
+          const savedRaw = sessionStorage.getItem("selectedPromotion");
+          const savedParsed = savedRaw ? JSON.parse(savedRaw) : null;
+
+          const selectedId = navPromo?._id || savedParsed?._id || null;
+
+          const matchingSelected = selectedId
+            ? promotions.find(
+                (item) =>
+                  item._id === selectedId &&
+                  item.isEligible !== false &&
+                  !item.alreadyUsed,
+              )
+            : null;
+
+          const firstSelectable = promotions.find(
+            (item) => item.isEligible !== false && !item.alreadyUsed,
+          );
+
+          if (matchingSelected) {
+            setPendingPromotion(matchingSelected);
+            if (!appliedSelectionRef.current) {
+              dispatch(setSelectedPromotion(matchingSelected));
+              appliedSelectionRef.current = true;
+            }
+          } else if (firstSelectable) {
+            setPendingPromotion(firstSelectable);
+            if (!appliedSelectionRef.current) {
+              dispatch(setSelectedPromotion(firstSelectable));
+              appliedSelectionRef.current = true;
+            }
+          } else {
+            setPendingPromotion(null);
+            if (!appliedSelectionRef.current) {
+              dispatch(clearSelectedPromotion());
+              appliedSelectionRef.current = true;
+            }
+          }
+        }
+      } catch (error) {
+        if (mounted) {
+          setPromotionsError(
+            error?.response?.data?.message || "Failed to load promotions",
+          );
+          setAvailablePromotions([]);
+          setPendingPromotion(null);
+        }
+      } finally {
+        if (mounted) {
+          setPromotionsLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+    // run only once on mount to avoid loops
+  }, []);
+
+  const selectedMethod = paymentMethods.find((m) => m.id === activeMethod);
+  const targetNumber =
+    selectedMethod?.toNumber || PAYMENT_AGENT_NUMBERS.default;
+  const selectedProvider = selectedMethod?.provider || null;
+
+  // Handle Promo Code Apply
+  const handleApplyPromo = async () => {
+    if (!promoCode.trim()) {
+      setPromoError("Please enter a promo code");
+      return;
+    }
+
+    if (!depositAmount || parseFloat(depositAmount) < 200) {
+      setPromoError("Please enter a valid deposit amount first");
+      return;
+    }
+
+    setPromoLoading(true);
+    setPromoError(null);
+
+    try {
+      const response = await walletService.applyPromoCode({
+        code: promoCode.trim().toUpperCase(),
+        depositAmount: parseFloat(depositAmount),
+      });
+
+      const data = response?.data?.data || response?.data;
+
+      setPromoData(data);
+      setPromoApplied(true);
+      setPromoError(null);
+    } catch (error) {
+      const errorMsg =
+        error?.response?.data?.message || "Invalid or expired promo code";
+      setPromoError(errorMsg);
+      setPromoApplied(false);
+      setPromoData(null);
+    } finally {
+      setPromoLoading(false);
+    }
+  };
+
+  // Clear promo when deposit amount changes
+  const handleDepositAmountChange = (value) => {
+    setDepositAmount(value);
+    if (promoApplied) {
+      setPromoApplied(false);
+      setPromoData(null);
+      setPromoError(null);
+    }
+  };
+
+  // Calculate total bonus amount
+  const calculateBonusAmount = () => {
+    if (!promoData || !depositAmount) return 0;
+
+    const amount = parseFloat(depositAmount);
+    let bonus = 0;
+
+    if (promoData.bonusAmount) {
+      bonus = promoData.bonusAmount;
+    } else if (promoData.bonusPercentage) {
+      bonus = (amount * promoData.bonusPercentage) / 100;
+      if (promoData.maxBonus && bonus > promoData.maxBonus) {
+        bonus = promoData.maxBonus;
+      }
+    }
+
+    return bonus;
+  };
+
+  const handleOpenPromotionModal = () => {
+    setPromotionModalOpen(true);
+  };
+
+  const handleSelectPromotion = (promotion) => {
+    setPendingPromotion(promotion);
+  };
+
+  const handleConfirmPromotion = () => {
+    if (!pendingPromotion?._id) return;
+
+    dispatch(setSelectedPromotion(pendingPromotion));
+    setPromoCode(
+      pendingPromotion.promoCode
+        ? pendingPromotion.promoCode.toUpperCase()
+        : "",
+    );
+    setPromoApplied(false);
+    setPromoData(null);
+    setPromoError(null);
+    setFormStatus({
+      type: "info",
+      text: `${pendingPromotion.title || pendingPromotion.promoCode || "Promotion"} selected. Click Apply to use it.`,
+    });
+    setPromotionModalOpen(false);
+  };
+
+  const handleRemovePromotion = () => {
+    setPendingPromotion(null);
+    dispatch(clearSelectedPromotion());
+    setPromoCode("");
+    setPromoApplied(false);
+    setPromoData(null);
+    setPromoError(null);
+    setFormStatus({
+      type: "info",
+      text: "Promotion removed. Deposit will continue without a bonus.",
+    });
+  };
+
+  const selectedPromotionRules = useMemo(() => {
+    if (!selectedPromotion) return null;
+    const bonusConfig = selectedPromotion.bonusConfig || {};
+    return {
+      minDeposit: selectedPromotion.minDeposit ?? bonusConfig.minDeposit ?? 0,
+      maxDeposit:
+        selectedPromotion.maxDeposit ?? bonusConfig.maxDeposit ?? null,
+    };
+  }, [selectedPromotion]);
+
+  useEffect(() => {
+    if (!selectedPromotionRules || !depositAmount) return;
+
+    const amount = Number(depositAmount);
+    const minValue = Number(selectedPromotionRules.minDeposit || 0);
+    const maxValue =
+      selectedPromotionRules.maxDeposit == null
+        ? null
+        : Number(selectedPromotionRules.maxDeposit);
+
+    if (amount < minValue || (maxValue != null && amount > maxValue)) {
+      const maxText = maxValue == null ? "∞" : maxValue.toLocaleString();
+      setPromoError(
+        `BDT must be between ${minValue.toLocaleString()} and ${maxText} for selected promotion`,
+      );
+    } else if (promoError?.startsWith("BDT must be between")) {
+      setPromoError(null);
+    }
+  }, [depositAmount, selectedPromotionRules, promoError]);
+
+  const handleDeposit = async (e) => {
+    e.preventDefault();
+    setFormStatus(null);
+
+    if (!selectedPromotion) {
+      setFormStatus({ type: "error", text: "Please select a promotion first" });
+      return;
+    }
+
+    // Get selected method details
+    const selectedMethodObj = paymentMethods.find((m) => m.id === activeMethod);
+
+    // Validate deposit amount
+    if (!depositAmount) {
+      setFormStatus({
+        type: "error",
+        text: "Please enter deposit amount",
+      });
+      return;
+    }
+
+    if (selectedPromotionRules) {
+      const amount = Number(depositAmount);
+      const minValue = Number(selectedPromotionRules.minDeposit || 0);
+      const maxValue =
+        selectedPromotionRules.maxDeposit == null
+          ? null
+          : Number(selectedPromotionRules.maxDeposit);
+
+      if (amount < minValue || (maxValue != null && amount > maxValue)) {
+        const maxText = maxValue == null ? "∞" : maxValue.toLocaleString();
+        setFormStatus({
+          type: "error",
+          text: `BDT must be between ${minValue.toLocaleString()} and ${maxText} for selected promotion`,
+        });
+        return;
+      }
+    }
+
+    // For gateway methods
+    if (selectedMethodObj?.isGateway) {
+      try {
+        setSubmitting(true);
+
+        const response = await paymentService.createPayment({
+          amount: Number(depositAmount),
+          selectedPromotionId: selectedPromotion?._id || null,
+        });
+
+        const paymentUrl =
+          response?.data?.data?.paymentUrl ||
+          response?.data?.data?.payment_url ||
+          response?.data?.paymentUrl ||
+          response?.data?.payment_url;
+
+        if (paymentUrl) {
+          window.location.href = paymentUrl;
+        } else {
+          throw new Error("No redirect URL received from payment gateway");
+        }
+      } catch (err) {
+        const message =
+          err?.response?.data?.message || "Failed to initiate payment";
+        setFormStatus({ type: "error", text: message });
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    // For manual payment methods (original flow)
+    if (!phoneNumber || !transactionId) {
+      setFormStatus({
+        type: "error",
+        text: t("please_fill_all_fields") || "Please fill all fields",
+      });
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      const fd = new FormData();
+      fd.append("amount", depositAmount);
+      fd.append("paymentMethod", activeMethod);
+      fd.append("fromNumber", phoneNumber);
+      fd.append("toNumber", targetNumber);
+      fd.append("transactionId", transactionId);
+      if (selectedPromotion?._id) {
+        fd.append("selectedPromotionId", selectedPromotion._id);
+      }
+      if (proofImage) {
+        fd.append("proofImage", proofImage);
+      }
+
+      // Include selected promotion or manually applied promo code
+      const appliedPromoCode =
+        selectedPromotion?.promoCode || (promoApplied ? promoCode : "");
+      if (appliedPromoCode) {
+        fd.append("promoCode", appliedPromoCode.trim().toUpperCase());
+      }
+
+      await walletService.createDeposit(fd);
+      setFormStatus({
+        type: "success",
+        text: t("deposit_successful"),
+      });
+      // Clear stored promotion on successful deposit
+      try {
+        sessionStorage.removeItem("selectedPromotion");
+      } catch (e) {}
+      dispatch(clearSelectedPromotion());
+      setPendingPromotion(null);
+      setPromoCode("");
+      setPromoApplied(false);
+      setPromoData(null);
+
+      setDepositAmount("");
+      setPhoneNumber("");
+      setTransactionId("");
+      setProofImage(null);
+    } catch (err) {
+      const message = err?.response?.data?.message || t("deposit_failed");
+      setFormStatus({ type: "error", text: message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const quickAmounts = [10, 500, 1000, 2000, 5000, 10000];
+  const selectedPromotionLabel = selectedPromotion
+    ? `${selectedPromotion.title || selectedPromotion.promoCode || "Promotion"}${selectedPromotion.promoCode ? ` (${selectedPromotion.promoCode})` : ""}`
+    : "No promotion selected";
+
+  return (
+    <>
+      {/* SEO Meta Tags */}
+      <SEO {...getSEO("deposit")} />
+
+      <div className="min-h-screen  text-white p-4 md:p-8">
+        <div className="max-w-7xl mx-auto">
+          <div className="flex flex-col lg:flex-row gap-8">
+            {/* Left Panel: Payment Methods & Form */}
+            <div className="lg:w-2/3">
+              {/* Deposit Form */}
+              <div className="bg-gray-800 rounded-2xl shadow-2xl p-6 border border-gray-700">
+                <h2 className="text-xl font-bold mb-6 pb-4 border-b border-gray-700 flex items-center">
+                  <svg
+                    className="w-6 h-6 mr-3 text-green-400"
+                    fill="currentColor"
+                    viewBox="0 0 20 20"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 5a1 1 0 100 2h1a2 2 0 011.732 1H7a1 1 0 100 2h2.732A2 2 0 018 11H7a1 1 0 00-.707 1.707l3 3a1 1 0 001.414-1.414l-1.483-1.484A4.008 4.008 0 0011.874 10H13a1 1 0 100-2h-1.126a3.976 3.976 0 00-.41-1H13a1 1 0 100-2H7z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  {t("enterDepositDetails")}
+                </h2>
+
+                {formStatus && (
+                  <div
+                    className={`mb-4 rounded-xl px-4 py-3 text-sm ${formStatus.type === "error" ? "bg-red-900/50 text-red-100 border border-red-700" : "bg-green-900/40 text-green-100 border border-green-700"}`}
+                  >
+                    {formStatus.text}
+                  </div>
+                )}
+
+                <form onSubmit={handleDeposit}>
+                  {/* Deposit Amount Section */}
+                  <div className="mb-8">
+                    <label className="text-white font-bold mb-4 flex items-center">
+                      <span className="w-1 h-6 bg-yellow-500 rounded-full mr-3"></span>
+                      {t("depositAmount")}
+                    </label>
+
+                    {/* Quick Amount Buttons */}
+                    <div className="mb-6">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                        {[100, 500, 1000, 5000, 10000, 15000, 20000, 25000].map(
+                          (amount) => (
+                            <button
+                              type="button"
+                              key={amount}
+                              onClick={() =>
+                                setDepositAmount(amount.toString())
+                              }
+                              className={`py-2 px-3 rounded-md font-semibold text-sm transition-all duration-200 ${
+                                depositAmount === amount.toString()
+                                  ? "bg-yellow-500 text-black shadow-lg shadow-yellow-500/50"
+                                  : "bg-gray-700 text-yellow-500 hover:bg-gray-600 hover:shadow-lg hover:shadow-yellow-500/20 active:scale-95"
+                              }`}
+                            >
+                              +{amount.toLocaleString()}
+                            </button>
+                          ),
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Amount Input */}
+                    <div className="relative mb-4">
+                      <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                        <span className="text-2xl font-bold text-yellow-500">
+                          ৳
+                        </span>
+                      </div>
+                      <input
+                        type="number"
+                        value={depositAmount}
+                        onChange={(e) =>
+                          handleDepositAmountChange(e.target.value)
+                        }
+                        className="w-full bg-gray-900 border-2 border-gray-600 focus:border-yellow-500 rounded-xl pl-12 pr-4 py-4 text-2xl font-bold text-white focus:outline-none focus:shadow-lg focus:shadow-yellow-500/30 transition-all placeholder-gray-600"
+                        placeholder="0"
+                        min="10"
+                        max="100000"
+                        required
+                      />
+                    </div>
+
+                    {/* Error Text */}
+                    {formStatus?.type === "error" && (
+                      <div className="mb-4 flex items-center text-red-400 text-sm">
+                        <svg
+                          className="w-4 h-4 mr-2 shrink-0"
+                          fill="currentColor"
+                          viewBox="0 0 20 20"
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                        {formStatus.text}
+                      </div>
+                    )}
+
+                    {/* Gentle Reminder Dropdown */}
+                    <details className="mb-6">
+                      <summary className="flex items-center justify-between bg-gray-800 px-4 py-3 rounded-lg cursor-pointer hover:bg-gray-750 transition-colors border border-gray-700">
+                        <span className="text-gray-300 font-medium">
+                          {t("gentleReminder")}
+                        </span>
+                        <svg
+                          className="w-5 h-5 text-gray-400 transition-transform"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M19 14l-7 7m0 0l-7-7m7 7V3"
+                          />
+                        </svg>
+                      </summary>
+                      <div className="mt-2 bg-gray-800 border border-gray-700 rounded-lg p-4 text-gray-300 text-sm">
+                        <p>{t("depositReminder")}</p>
+                      </div>
+                    </details>
+                  </div>
+
+                  {/* Select Promotion */}
+                  <div id="promo-section" className="mb-8">
+                    <label className="text-white font-bold mb-4 flex items-center">
+                      <span className="w-1 h-6 bg-yellow-500 rounded-full mr-3"></span>
+                      {t("selectPromotion")}
+                    </label>
+
+                    <div className="grid grid-cols-1 md:grid-cols-1 gap-3 items-center">
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setPromotionModalOpen(true)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ")
+                            setPromotionModalOpen(true);
+                        }}
+                        className="relative w-full bg-gray-900 border-2 border-gray-700 rounded-xl px-4 py-4 text-lg font-semibold text-white focus:outline-none cursor-pointer hover:border-yellow-500 transition-colors"
+                      >
+                        {selectedPromotionLabel}
+                      </div>
+                    </div>
+
+                    <p className="text-sm text-gray-500 mt-2">
+                      {t("promotionHelpText")}
+                    </p>
+
+                    {!selectedPromotion && (
+                      <p className="mt-3 text-sm text-red-400">
+                        {t("pleaseSelectPromotion")}
+                      </p>
+                    )}
+
+                    {selectedPromotionRules && depositAmount && promoError && (
+                      <p className="mt-3 text-sm text-red-400">{promoError}</p>
+                    )}
+                  </div>
+
+                  {promotionModalOpen && (
+                    <div className="fixed inset-0 z-99998 flex items-center justify-center bg-black/70 px-4 py-6">
+                      <div className="w-full max-w-2xl rounded-2xl border border-gray-700 bg-gray-900 shadow-2xl overflow-hidden">
+                        <div className="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+                          <h3 className="text-lg font-bold text-white">
+                            {t("selectPromotion")}
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => setPromotionModalOpen(false)}
+                            className="text-gray-400 hover:text-white transition-colors"
+                          >
+                            ✕
+                          </button>
+                        </div>
+
+                        <div className="max-h-[60vh] overflow-y-auto p-5 space-y-3">
+                          {promotionsLoading && (
+                            <div className="py-12 text-center text-gray-400">
+                              {t("loadingPromotions")}
+                            </div>
+                          )}
+
+                          {promotionsError && !promotionsLoading && (
+                            <div className="rounded-xl border border-red-700 bg-red-900/30 px-4 py-3 text-sm text-red-100">
+                              {promotionsError}
+                            </div>
+                          )}
+
+                          {!promotionsLoading &&
+                            !promotionsError &&
+                            availablePromotions.length === 0 && (
+                              <div className="py-12 text-center text-gray-400">
+                                {t("noActivePromotions")}
+                              </div>
+                            )}
+
+                          {!promotionsLoading &&
+                            !promotionsError &&
+                            availablePromotions.map((promotion) => {
+                              const isSelected =
+                                pendingPromotion?._id === promotion._id;
+
+                              return (
+                                <button
+                                  key={
+                                    promotion._id ||
+                                    `${promotion.promoCode || promotion.title}-${promotion.allowedCategories?.[0] || "all"}`
+                                  }
+                                  type="button"
+                                  onClick={() =>
+                                    handleSelectPromotion(promotion)
+                                  }
+                                  className={`w-full rounded-xl border px-4 py-4 text-left transition-all duration-200 ${
+                                    isSelected
+                                      ? "border-yellow-500 bg-yellow-500/10"
+                                      : "border-gray-700 bg-gray-800 hover:border-gray-500"
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between gap-4">
+                                    <div>
+                                      <div className="text-white font-bold text-base">
+                                        {promotion.title}
+                                      </div>
+                                      <div className="mt-1 text-sm text-gray-400">
+                                        {t("category")}:{" "}
+                                        {promotion.allowedCategories?.[0] ||
+                                          t("all")}
+                                      </div>
+                                      <div className="mt-1 text-sm text-yellow-400 font-semibold">
+                                        {formatPromoBonus(promotion)}
+                                      </div>
+                                      <div className="mt-1 text-xs text-gray-500">
+                                        {promotion.shortDescription ||
+                                          promotion.fullDescription ||
+                                          t("activePromotion")}
+                                      </div>
+                                    </div>
+
+                                    <div className="text-right text-xs text-gray-400">
+                                      <div>
+                                        {t("start")}:{" "}
+                                        {formatPromoExpiry(promotion.createdAt)}
+                                      </div>
+                                      <div>
+                                        {t("end")}:{" "}
+                                        {formatPromoExpiry(promotion.expiresAt)}
+                                      </div>
+                                      <div>
+                                        {t("minimum")}: ৳
+                                        {promotion.bonusConfig?.minDeposit || 0}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3 border-t border-gray-800 px-5 py-4">
+                          <div className="text-sm text-gray-400">
+                            {pendingPromotion
+                              ? `{${t("selected")}: ${pendingPromotion.title || pendingPromotion.promoCode || "Promotion"}}`
+                              : `{${t("selectPromotionToContinue")}}`}
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => setPromotionModalOpen(false)}
+                              className="h-11 rounded-xl border border-gray-700 px-4 text-sm font-semibold text-white hover:bg-gray-800 transition-colors"
+                            >
+                              {t("cancel")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleConfirmPromotion}
+                              disabled={!pendingPromotion}
+                              className="h-11 rounded-xl bg-yellow-500 px-4 text-sm font-bold text-black hover:bg-yellow-600 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {t("confirmSelection")}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Sender number - Only show for manual payment methods */}
+                  {!selectedMethod?.isGateway && (
+                    <div className="mb-8">
+                      <label className="block text-gray-400 mb-3">
+                        প্রেরক নম্বর ({selectedMethod?.name || "Payment"} থেকে)
+                      </label>
+                      <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                          <span className="text-gray-500">+880</span>
+                        </div>
+                        <input
+                          type="tel"
+                          value={phoneNumber}
+                          onChange={(e) => setPhoneNumber(e.target.value)}
+                          className="w-full bg-gray-900 border-2 border-gray-700 rounded-xl pl-20 pr-4 py-4 text-lg focus:outline-none focus:border-yellow-500 transition-all"
+                          placeholder="1XXXXXXXXXX"
+                          pattern="[0-9]{10}"
+                          required
+                        />
+                      </div>
+                      <p className="text-sm text-gray-500 mt-2">
+                        আপনার যে নম্বর থেকে টাকা পাঠাবেন সেটি দিন ( +880 ছাড়া
+                        ১১ ডিজিট )।
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Agent number - Only show for manual payment methods */}
+                  {!selectedMethod?.isGateway && (
+                    <div className="mb-8">
+                      <label className="block text-gray-400 mb-3">
+                        গ্রাহক (Agent) নম্বর
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={targetNumber}
+                          readOnly
+                          className="w-full bg-gray-900 border-2 border-gray-700 rounded-xl px-4 py-4 text-lg font-semibold tracking-wide focus:outline-none"
+                        />
+                        <div className="absolute inset-y-0 right-0 pr-4 flex items-center text-xs text-gray-400">
+                          এই নম্বরে টাকা পাঠান
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Transaction ID - Only show for manual payment methods */}
+                  {!selectedMethod?.isGateway && (
+                    <div className="mb-8">
+                      <label className="block text-gray-400 mb-3">
+                        লেনদেন / TRX আইডি
+                      </label>
+                      <input
+                        type="text"
+                        value={transactionId}
+                        onChange={(e) => setTransactionId(e.target.value)}
+                        className="w-full bg-gray-900 border-2 border-gray-700 rounded-xl px-4 py-4 text-lg focus:outline-none focus:border-yellow-500 transition-all"
+                        placeholder="TRX123456789"
+                        required
+                      />
+                    </div>
+                  )}
+
+                  {/* Proof upload - Only show for manual payment methods */}
+                  {!selectedMethod?.isGateway && (
+                    <div className="mb-8">
+                      <label className="block text-gray-400 mb-3">
+                        পেমেন্টের স্ক্রিনশট / প্রমাণপত্র (ঐচ্ছিক)
+                      </label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) =>
+                          setProofImage(e.target.files?.[0] || null)
+                        }
+                        className="w-full text-sm text-gray-300 file:mr-4 file:py-3 file:px-4 file:rounded-lg file:border-0 file:bg-yellow-600 file:text-white hover:file:bg-yellow-500 cursor-pointer"
+                      />
+                      <p className="text-sm text-gray-500 mt-2">
+                        লেনদেন সম্পন্ন হওয়ার পর রসিদ/স্ক্রিনশট আপলোড করুন
+                        (ঐচ্ছিক)।
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Terms and Submit */}
+                  <div className="flex items-start mb-8">
+                    <input
+                      type="checkbox"
+                      id="terms"
+                      className="mt-1 mr-3 h-5 w-5 rounded border-gray-700 bg-gray-900 text-yellow-500 focus:ring-yellow-500"
+                      required
+                    />
+                    <label htmlFor="terms" className="text-gray-400 text-sm">
+                      {t("agreeTerms")}
+                    </label>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full bg-yellow-500 hover:bg-yellow-600 active:scale-95 text-black font-bold text-lg py-4 rounded-lg shadow-lg shadow-yellow-500/30 hover:shadow-yellow-500/50 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={
+                      submitting ||
+                      promotionsLoading ||
+                      !depositAmount ||
+                      !selectedPromotion
+                    }
+                  >
+                    {submitting ? t("processing") : t("submit")}
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          {/* Security Footer */}
+          <div className="mt-12 pt-8 mb-22 border-t border-gray-800">
+            <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="flex items-center space-x-6">
+                <div className="flex items-center">
+                  <div className="w-10 h-10 bg-green-900 rounded-full flex items-center justify-center mr-3">
+                    <svg
+                      className="w-6 h-6 text-green-400"
+                      fill="currentColor"
+                      viewBox="0 0 20 20"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="font-bold text-black">{t("securePayment")}</p>
+                    <p className="text-xs text-gray-500">
+                      {t("sslEncryption")}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center">
+                  <div className="w-10 h-10 bg-blue-900 rounded-full flex items-center justify-center mr-3">
+                    <svg
+                      className="w-6 h-6 text-blue-400"
+                      fill="currentColor"
+                      viewBox="0 0 20 20"
+                    >
+                      <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="font-bold text-black">{t("support247")}</p>
+                    <p className="text-xs text-gray-500">
+                      {t("liveChatPhone")}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-4">
+                <div className="text-center">
+                  <p className="text-xs text-gray-500">
+                    {t("licensedRegulated")}
+                  </p>
+                  <p className="font-bold text-sm">{t("mgaCuracaoEgaming")}</p>
+                </div>
+                <div className="h-8 w-px bg-gray-700"></div>
+                <div className="text-center">
+                  <p className="text-xs text-gray-500">
+                    {t("responsibleGambling")}
+                  </p>
+                  <p className="font-bold text-sm">{t("adultsOnly")}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+};
+
+export default DepositPage;
