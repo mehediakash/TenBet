@@ -393,6 +393,25 @@ class IGamingService {
         callbackMemberAccount: memberAccount,
       });
 
+      // ✅ FIX: Persist callback game_round into GameSession
+      // Logic unchanged - only store provider round if session doesn't have it yet
+      if (game_round && gameSession.gameRound !== String(game_round)) {
+        console.log("[DEBUG][GameRound] updating session gameRound", {
+          sessionId: gameSession._id,
+          previousRound: gameSession.gameRound,
+          callbackRound: game_round,
+        });
+
+        gameSession.gameRound = String(game_round);
+
+        await gameSession.save({ session });
+
+        console.log("[DEBUG][GameRound] session updated", {
+          sessionId: gameSession._id,
+          savedRound: gameSession.gameRound,
+        });
+      }
+
       buildProviderBalanceResponse = async () => {
         const latestWallet = await WalletService.getWalletBalance(
           gameSession.user,
