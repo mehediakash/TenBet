@@ -358,63 +358,13 @@ exports.launchGame = async (req, res) => {
 // @route   POST /api/games/callback
 // @access  Public
 exports.handleGameCallback = async (req, res) => {
-  const start = Date.now();
-
-  // DEBUG (D): Log full incoming callback headers + body + specific fields at controller entry
-  console.log("[DEBUG][Controller][Callback] req.headers", {
-    "content-type": req.headers["content-type"],
-    "user-agent": req.headers["user-agent"],
-    host: req.headers["host"],
-    raw: req.headers,
-  });
-  console.log("[DEBUG][Controller][Callback] full payload", req.body);
-  console.log("[DEBUG][Controller][Callback] explicit fields", {
-    serial_number: req.body?.serial_number ?? null,
-    member_account: req.body?.member_account ?? null,
-    game_uid: req.body?.game_uid ?? null,
-    game_round: req.body?.game_round ?? null,
-  });
-
-  console.log("[GAMECONTROLLER][handleGameCallback] request received", {
-    receivedAt: new Date(start).toISOString(),
-    body: req.body,
-    headers: {
-      "content-type": req.headers["content-type"],
-      "user-agent": req.headers["user-agent"],
-    },
-  });
-
   try {
-    console.log("CALLBACK FROM IGAMINGAPIS:", req.body);
-
     const result = await igamingService.handleGameCallback(req.body);
-    // DEBUG: log service result
-    console.log("[DEBUG][Controller][Callback] service result", result);
-
-    console.log("[GAMECONTROLLER][handleGameCallback] response", {
-      ms: Date.now() - start,
-      result,
-      credit_amount: result?.credit_amount,
-      timestamp: result?.timestamp,
-    });
-
-    console.log("CALLBACK END", {
-      ms: Date.now() - start,
-      result,
-    });
-
     res.json({
       credit_amount: result.credit_amount,
       timestamp: result.timestamp || Date.now(),
     });
   } catch (error) {
-    console.error("[GAMECONTROLLER][handleGameCallback] ERROR", {
-      message: error.message,
-      stack: error.stack,
-      ms: Date.now() - start,
-      body: req.body,
-    });
-
     throw error;
   }
 };
