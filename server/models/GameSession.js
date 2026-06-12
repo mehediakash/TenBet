@@ -6,6 +6,11 @@ const gameSessionSchema = new mongoose.Schema({
     ref: "User",
     required: true,
   },
+  memberAccount: {
+    type: String,
+    default: null,
+    index: true,
+  },
   game: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Game",

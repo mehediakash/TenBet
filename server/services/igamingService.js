@@ -193,6 +193,7 @@ class IGamingService {
       const gameSession = await GameSession.create({
         user: user._id,
         game: game._id,
+        memberAccount: String(user.userId),
         gameUid:
           `GS${Date.now()}${Math.random().toString(36).substr(2, 9)}`.toUpperCase(),
         providerGameCode,
@@ -352,16 +353,17 @@ class IGamingService {
           status: "active",
         };
         console.log(
-          "[DEBUG][SessionLookup] attempting fallback lookup by providerGameCode ONLY",
+          "[DEBUG][SessionLookup] lookup by providerGameCode + memberAccount",
           {
-            warning:
-              "UNSAFE: This lookup ignores member_account and may match wrong user if multiple users play same game",
-            query: q2,
+            providerGameCode: game_uid,
+            memberAccount: String(memberAccount),
+            status: "active",
           },
         );
 
         gameSession = await GameSession.findOne({
           providerGameCode: game_uid,
+          memberAccount: String(memberAccount),
           status: "active",
         })
           .sort({ createdAt: -1 })
