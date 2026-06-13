@@ -313,3 +313,11 @@ option:hover {
 input[type="text"] {
   border: 1px solid black;
 }
+
+.tawk-min-container {
+  transform: translateY(-80px) !important;
+}
+
+.tawk-button {
+  bottom: 80px !important;
+}

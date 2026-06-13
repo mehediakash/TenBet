@@ -909,17 +909,18 @@ const NavbarSidebar = () => {
                     {t("promotions")}
                   </span>
                 </Link>
-
-                <div className="flex flex-col items-center justify-center text-center cursor-pointer hover:opacity-80 transition">
-                  <img
-                    src="https://bajiwala88.live/img/sidebar_icons/icon-download.svg"
-                    className="text-yellow-400 w-8 h-8 mb-2"
-                    alt="App"
-                  />
-                  <span className="text-white text-sm font-semibold leading-4">
-                    {t("appDownload")}
-                  </span>
-                </div>
+                <a href="https://tenbet.live/downloads/TenBet.apk" download>
+                  <div className="flex flex-col items-center justify-center text-center cursor-pointer hover:opacity-80 transition">
+                    <img
+                      src="https://bajiwala88.live/img/sidebar_icons/icon-download.svg"
+                      className="text-yellow-400 w-8 h-8 mb-2"
+                      alt="App"
+                    />
+                    <span className="text-white text-sm font-semibold leading-4">
+                      {t("appDownload")}
+                    </span>
+                  </div>
+                </a>
 
                 <div className="flex flex-col items-center justify-center text-center cursor-pointer hover:opacity-80 transition">
                   <FiGift className="text-yellow-400 text-4xl mb-2" />

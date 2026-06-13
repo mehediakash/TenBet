@@ -548,7 +548,11 @@ const DesktopLayout = () => {
       {
         key: "/app-download",
         icon: <DownloadOutlined />,
-        label: t("appDownload"),
+        label: (
+          <a href="https://tenbet.live/downloads/TenBet.apk" download>
+            {t("appDownload")}
+          </a>
+        ),
       },
       {
         key: "/affiliate",
