@@ -1,80 +1,121 @@
-// ADD TO YOUR EXISTING WEBSITE - routes/callbackRoutes.js
+// WEBSITE: routes/callbackRoutes.js
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 
-/**
- * Internal callback endpoint for Callback Hub
- *
- * CRITICAL FIXES:
- * 1. MUST return credit_amount (provider's expected field)
- * 2. MUST NOT modify handleGameCallback() return value
- * 3. Error handler must still return valid credit_amount
- * 4. Log all responses for debugging
- */
+// FIXED: Emergency balance function that actually works
+async function getEmergencyBalance(memberAccount) {
+  try {
+    console.log(`[EmergencyBalance] Looking up user: ${memberAccount}`);
+
+    const User = require("../models/User");
+    const WalletService = require("../services/walletService");
+
+    // FIXED: Handle both number and string userId
+    const user = await User.findOne({
+      $or: [
+        { userId: String(memberAccount) },
+        { userId: Number(memberAccount) },
+        { _id: memberAccount },
+      ],
+    });
+
+    if (!user) {
+      console.error(`[EmergencyBalance] User not found: ${memberAccount}`);
+      return null;
+    }
+
+    const wallet = await WalletService.getWalletBalance(user._id);
+    const balance = wallet?.main ?? wallet?.balance ?? 0;
+
+    console.log(
+      `[EmergencyBalance] Balance=${balance} for user ${memberAccount}`,
+    );
+
+    // FIXED: Return number, not string
+    return typeof balance === "number" ? balance : parseFloat(balance) || 0;
+  } catch (error) {
+    console.error("[EmergencyBalance] Error:", error);
+    return null;
+  }
+}
+
 router.post("/internal/provider-callback", async (req, res) => {
   const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
   const startTime = Date.now();
 
+  console.log(`[${requestId}] Callback received:`, {
+    member: req.body.member_account,
+    round: req.body.game_round,
+    bet: req.body.bet_amount,
+    win: req.body.win_amount,
+  });
+
   try {
-    // Verify secret
     const secret = req.headers["x-callback-secret"];
     const expectedSecret = process.env.INTERNAL_CALLBACK_SECRET;
 
     if (!expectedSecret || secret !== expectedSecret) {
       console.error(`[${requestId}] Unauthorized`);
-      return res.status(401).json({
-        credit_amount: -1,
-        error: "Unauthorized",
-      });
+      return res.status(401).json({ credit_amount: -1, error: "Unauthorized" });
     }
 
     const callbackData = req.body;
-    const { game_round, member_account, bet_amount, win_amount } = callbackData;
+    const { member_account, game_round } = callbackData;
 
-    console.log(
-      `[${requestId}] Processing: round=${game_round}, member=${member_account}, bet=${bet_amount}, win=${win_amount}`,
-    );
-
-    // CALL YOUR EXISTING handleGameCallback()
-    // This method already returns { credit_amount, timestamp }
+    // Call your existing handleGameCallback
     const result = await IGamingService.handleGameCallback(callbackData);
 
     const duration = Date.now() - startTime;
 
-    // CRITICAL: Log the actual balance being returned
-    console.log(
-      `[${requestId}] handleGameCallback returned: credit_amount=${result?.credit_amount}, duration=${duration}ms`,
-    );
+    console.log(`[${requestId}] handleGameCallback result:`, {
+      credit_amount: result?.credit_amount,
+      duration_ms: duration,
+    });
 
-    // CRITICAL: Return EXACTLY what handleGameCallback returns
-    // DO NOT modify, DO NOT add defaults unless undefined
-    if (!result || result.credit_amount === undefined) {
-      console.error(
-        `[${requestId}] Invalid result from handleGameCallback:`,
-        result,
-      );
+    // Validate result
+    if (
+      !result ||
+      result.credit_amount === undefined ||
+      result.credit_amount === null
+    ) {
+      console.error(`[${requestId}] Invalid result from handleGameCallback`);
 
-      // Emergency: get balance directly from wallet
       const emergencyBalance = await getEmergencyBalance(member_account);
 
+      // FIXED: Return emergency balance only if valid
+      const finalBalance =
+        emergencyBalance !== null && emergencyBalance >= 0
+          ? emergencyBalance
+          : 0;
+
+      console.log(`[${requestId}] Emergency fallback balance: ${finalBalance}`);
+
       return res.status(200).json({
-        credit_amount: emergencyBalance,
+        credit_amount: finalBalance,
         timestamp: Date.now(),
-        error: "Invalid handler response",
+        warning: "Using emergency balance",
       });
     }
 
-    // SUCCESS: Return the actual balance from your business logic
+    // FIXED: Ensure numeric value
+    const creditAmount =
+      typeof result.credit_amount === "number"
+        ? result.credit_amount
+        : parseFloat(result.credit_amount);
+
+    console.log(`[${requestId}] Returning balance: ${creditAmount}`);
+
     return res.status(200).json({
-      credit_amount: result.credit_amount,
+      credit_amount: isNaN(creditAmount) ? 0 : creditAmount,
       timestamp: result.timestamp || Date.now(),
     });
   } catch (error) {
     const duration = Date.now() - startTime;
     console.error(`[${requestId}] Error after ${duration}ms:`, error);
 
-    // CRITICAL: Even on error, try to return actual balance
-    let emergencyBalance = 0;
+    // FIXED: Try to get emergency balance
+    let emergencyBalance = null;
     try {
       const { member_account } = req.body;
       if (member_account) {
@@ -84,52 +125,29 @@ router.post("/internal/provider-callback", async (req, res) => {
       console.error(`[${requestId}] Emergency balance failed:`, balanceError);
     }
 
-    // Return actual balance, not 0
+    const finalBalance =
+      emergencyBalance !== null && emergencyBalance >= 0 ? emergencyBalance : 0;
+
+    console.log(`[${requestId}] Error response balance: ${finalBalance}`);
+
     return res.status(200).json({
-      credit_amount: emergencyBalance,
+      credit_amount: finalBalance,
       timestamp: Date.now(),
       error: error.message,
     });
   }
 });
 
-/**
- * Emergency balance retrieval - direct database access
- * This bypasses handleGameCallback() for error scenarios
- */
-async function getEmergencyBalance(memberAccount) {
-  try {
-    const User = require("../models/User");
-    const WalletService = require("../services/walletService");
-
-    const user = await User.findOne({ userId: String(memberAccount) });
-    if (!user) {
-      console.error(`[EmergencyBalance] User not found: ${memberAccount}`);
-      return 0;
-    }
-
-    const wallet = await WalletService.getWalletBalance(user._id);
-    const balance = wallet?.main || 0;
-
-    console.log(
-      `[EmergencyBalance] Got balance ${balance} for ${memberAccount}`,
-    );
-    return balance;
-  } catch (error) {
-    console.error("[EmergencyBalance] Error:", error);
-    return 0;
-  }
-}
-
-/**
- * Balance check endpoint for callback hub
- */
+// FIXED: Balance endpoint - returns proper number
 router.get("/internal/balance", async (req, res) => {
   try {
+    console.log(`[BalanceEndpoint] Request received:`, req.query);
+
     const secret = req.headers["x-callback-secret"];
     const expectedSecret = process.env.INTERNAL_CALLBACK_SECRET;
 
     if (!expectedSecret || secret !== expectedSecret) {
+      console.error(`[BalanceEndpoint] Unauthorized`);
       return res.status(401).json({ error: "Unauthorized" });
     }
 
@@ -138,16 +156,24 @@ router.get("/internal/balance", async (req, res) => {
       return res.status(400).json({ error: "memberAccount required" });
     }
 
+    // FIXED: Use same emergency balance function
     const balance = await getEmergencyBalance(memberAccount);
 
+    // FIXED: Return proper number, not string
+    const finalBalance = balance !== null && balance >= 0 ? balance : 0;
+
+    console.log(
+      `[BalanceEndpoint] Returning balance=${finalBalance} for ${memberAccount}`,
+    );
+
     return res.json({
-      balance,
-      credit_amount: balance, // Include both for compatibility
+      balance: finalBalance,
+      credit_amount: finalBalance,
       memberAccount,
       timestamp: Date.now(),
     });
   } catch (error) {
-    console.error("Balance endpoint error:", error);
+    console.error("[BalanceEndpoint] Error:", error);
     return res.status(500).json({ error: error.message });
   }
 });
