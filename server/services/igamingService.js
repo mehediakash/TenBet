@@ -118,7 +118,7 @@ class IGamingService {
           `GS${Date.now()}${Math.random().toString(36).substr(2, 9)}`.toUpperCase(),
         providerGameCode,
         providerSessionId: sessionId,
-        status: "active",
+        status: "active", // Keep active, don't close old ones
         startBalance: balanceToSend,
         endBalance: balanceToSend,
         betAmount: 0,
