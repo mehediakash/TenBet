@@ -2,7 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const mongoose = require("mongoose");
-
+const IGamingService = require("../services/igamingService");
 // FIXED: Emergency balance function that actually works
 async function getEmergencyBalance(memberAccount) {
   try {
