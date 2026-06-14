@@ -45,7 +45,8 @@ class IGamingService {
   async launchGame(user, game, options = {}) {
     try {
       const providerGameCode = String(game.game_code).trim();
-      const returnUrl = `https://gamebetx.live/casino`;
+      const returnUrl = `https://gamebetx.live 
+.live/casino`;
       const callbackUrl = `${process.env.CALLBACK_HUB_URL}/api/games/callback`;
 
       // 1. ALWAYS USE WALLET AS BALANCE SOURCE
@@ -353,13 +354,24 @@ class IGamingService {
 
       return buildProviderBalanceResponse();
     } catch (err) {
+      console.error("========== CALLBACK ERROR ==========");
+      console.error(err);
+      console.error(err.message);
+      console.error(err.stack);
+      console.error("===================================");
+
       await session.abortTransaction();
+
       if (gameSession?.user) {
         try {
           return await buildProviderBalanceResponse();
         } catch {}
       }
-      return { credit_amount: -1, error: "Failed" }; // original: no timestamp
+
+      return {
+        credit_amount: -1,
+        error: err.message,
+      };
     } finally {
       session.endSession();
     }
