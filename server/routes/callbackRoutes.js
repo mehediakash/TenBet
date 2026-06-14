@@ -1,17 +1,17 @@
-// WEBSITE: routes/callbackRoutes.js
+// routes/callbackRoutes.js - Add to your existing website
 const express = require("express");
 const router = express.Router();
 const mongoose = require("mongoose");
 const IGamingService = require("../services/igamingService");
-// FIXED: Emergency balance function that actually works
+const GameSession = require("../models/GameSession");
+const WalletService = require("../services/walletService");
+const User = require("../models/User");
+
+// Emergency balance function
 async function getEmergencyBalance(memberAccount) {
   try {
     console.log(`[EmergencyBalance] Looking up user: ${memberAccount}`);
 
-    const User = require("../models/User");
-    const WalletService = require("../services/walletService");
-
-    // FIXED: Handle both number and string userId
     const user = await User.findOne({
       $or: [
         { userId: String(memberAccount) },
@@ -32,7 +32,6 @@ async function getEmergencyBalance(memberAccount) {
       `[EmergencyBalance] Balance=${balance} for user ${memberAccount}`,
     );
 
-    // FIXED: Return number, not string
     return typeof balance === "number" ? balance : parseFloat(balance) || 0;
   } catch (error) {
     console.error("[EmergencyBalance] Error:", error);
@@ -40,28 +39,35 @@ async function getEmergencyBalance(memberAccount) {
   }
 }
 
+// Main callback endpoint for Callback Hub
 router.post("/internal/provider-callback", async (req, res) => {
   const requestId = `${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
   const startTime = Date.now();
 
-  console.log(`[${requestId}] Callback received:`, {
-    member: req.body.member_account,
-    round: req.body.game_round,
-    bet: req.body.bet_amount,
-    win: req.body.win_amount,
-  });
+  console.log(`[${requestId}] ========== CALLBACK RECEIVED ==========`);
+  console.log(`[${requestId}] Payload:`, JSON.stringify(req.body, null, 2));
 
   try {
+    // Verify secret
     const secret = req.headers["x-callback-secret"];
     const expectedSecret = process.env.INTERNAL_CALLBACK_SECRET;
 
     if (!expectedSecret || secret !== expectedSecret) {
-      console.error(`[${requestId}] Unauthorized`);
+      console.error(`[${requestId}] Unauthorized - invalid secret`);
       return res.status(401).json({ credit_amount: -1, error: "Unauthorized" });
     }
 
     const callbackData = req.body;
-    const { member_account, game_round } = callbackData;
+    const { member_account, game_round, bet_amount, win_amount, game_uid } =
+      callbackData;
+
+    console.log(`[${requestId}] Processing callback:`, {
+      member: member_account,
+      round: game_round,
+      game: game_uid,
+      bet: bet_amount,
+      win: win_amount,
+    });
 
     // Call your existing handleGameCallback
     const result = await IGamingService.handleGameCallback(callbackData);
@@ -70,6 +76,7 @@ router.post("/internal/provider-callback", async (req, res) => {
 
     console.log(`[${requestId}] handleGameCallback result:`, {
       credit_amount: result?.credit_amount,
+      error: result?.error,
       duration_ms: duration,
     });
 
@@ -82,8 +89,6 @@ router.post("/internal/provider-callback", async (req, res) => {
       console.error(`[${requestId}] Invalid result from handleGameCallback`);
 
       const emergencyBalance = await getEmergencyBalance(member_account);
-
-      // FIXED: Return emergency balance only if valid
       const finalBalance =
         emergencyBalance !== null && emergencyBalance >= 0
           ? emergencyBalance
@@ -98,13 +103,14 @@ router.post("/internal/provider-callback", async (req, res) => {
       });
     }
 
-    // FIXED: Ensure numeric value
+    // Ensure numeric value
     const creditAmount =
       typeof result.credit_amount === "number"
         ? result.credit_amount
         : parseFloat(result.credit_amount);
 
     console.log(`[${requestId}] Returning balance: ${creditAmount}`);
+    console.log(`[${requestId}] ========== CALLBACK COMPLETE ==========`);
 
     return res.status(200).json({
       credit_amount: isNaN(creditAmount) ? 0 : creditAmount,
@@ -113,8 +119,8 @@ router.post("/internal/provider-callback", async (req, res) => {
   } catch (error) {
     const duration = Date.now() - startTime;
     console.error(`[${requestId}] Error after ${duration}ms:`, error);
+    console.error(`[${requestId}] Error stack:`, error.stack);
 
-    // FIXED: Try to get emergency balance
     let emergencyBalance = null;
     try {
       const { member_account } = req.body;
@@ -129,6 +135,7 @@ router.post("/internal/provider-callback", async (req, res) => {
       emergencyBalance !== null && emergencyBalance >= 0 ? emergencyBalance : 0;
 
     console.log(`[${requestId}] Error response balance: ${finalBalance}`);
+    console.log(`[${requestId}] ========== CALLBACK ERROR ==========`);
 
     return res.status(200).json({
       credit_amount: finalBalance,
@@ -138,7 +145,7 @@ router.post("/internal/provider-callback", async (req, res) => {
   }
 });
 
-// FIXED: Balance endpoint - returns proper number
+// Balance check endpoint for Callback Hub
 router.get("/internal/balance", async (req, res) => {
   try {
     console.log(`[BalanceEndpoint] Request received:`, req.query);
@@ -156,10 +163,7 @@ router.get("/internal/balance", async (req, res) => {
       return res.status(400).json({ error: "memberAccount required" });
     }
 
-    // FIXED: Use same emergency balance function
     const balance = await getEmergencyBalance(memberAccount);
-
-    // FIXED: Return proper number, not string
     const finalBalance = balance !== null && balance >= 0 ? balance : 0;
 
     console.log(
@@ -176,6 +180,49 @@ router.get("/internal/balance", async (req, res) => {
     console.error("[BalanceEndpoint] Error:", error);
     return res.status(500).json({ error: error.message });
   }
+});
+
+// Debug endpoint - Check game sessions
+router.get("/debug/game-sessions/:memberAccount", async (req, res) => {
+  try {
+    const { memberAccount } = req.params;
+
+    const sessions = await GameSession.find({
+      memberAccount: String(memberAccount),
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const activeSessions = sessions.filter((s) => s.status === "active");
+
+    res.json({
+      memberAccount,
+      total: sessions.length,
+      active: activeSessions.length,
+      sessions: sessions.map((s) => ({
+        id: s._id,
+        providerSessionId: s.providerSessionId,
+        providerGameCode: s.providerGameCode,
+        status: s.status,
+        createdAt: s.createdAt,
+        endBalance: s.endBalance,
+        gameRound: s.gameRound,
+        memberAccount: s.memberAccount,
+      })),
+    });
+  } catch (error) {
+    console.error("[Debug] Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Health check
+router.get("/internal/health", async (req, res) => {
+  res.json({
+    status: "ok",
+    timestamp: Date.now(),
+    website: process.env.WEBSITE_NAME,
+  });
 });
 
 module.exports = router;

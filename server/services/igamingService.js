@@ -45,13 +45,16 @@ class IGamingService {
   async launchGame(user, game, options = {}) {
     try {
       const providerGameCode = String(game.game_code).trim();
-      const returnUrl = `https://gamebetx.live 
-.live/casino`;
+      const returnUrl = `${process.env.CLIENT_URL}/casino`;
       const callbackUrl = `${process.env.CALLBACK_HUB_URL}/api/games/callback`;
 
       // 1. ALWAYS USE WALLET AS BALANCE SOURCE
       const wallet = await WalletService.getWalletBalance(user._id);
       const balanceToSend = r2(wallet.main || 0);
+
+      console.log(
+        `[LaunchGame] Starting launch for user ${user.userId}, game ${providerGameCode}, balance ${balanceToSend}`,
+      );
 
       // 2. BUILD PAYLOAD
       const payload = {
@@ -83,7 +86,6 @@ class IGamingService {
       const gameUrl = response.data.data.url;
 
       // 5. EXTRACT SESSION ID FROM PROVIDER URL
-      // Provider URL format: https://...?ssoKey=XXXX&lang=en-US&...
       let urlParams;
       try {
         urlParams = new URL(gameUrl).searchParams;
@@ -95,14 +97,20 @@ class IGamingService {
         urlParams.get("id") ||
         `fallback_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+      console.log(`[LaunchGame] Extracted sessionId: ${sessionId}`);
+
       // 6. CLOSE PREVIOUS ACTIVE SESSIONS FOR THIS USER + GAME
-      await GameSession.updateMany(
+      const closedCount = await GameSession.updateMany(
         { user: user._id, providerGameCode, status: "active" },
         { status: "closed", endedAt: new Date() },
       );
 
-      // 7. CREATE FRESH SESSION — store memberAccount for safe callback lookup
-      await GameSession.create({
+      console.log(
+        `[LaunchGame] Closed ${closedCount.modifiedCount} previous active sessions`,
+      );
+
+      // 7. CREATE FRESH SESSION
+      const newSession = await GameSession.create({
         user: user._id,
         game: game._id,
         memberAccount: String(user.userId),
@@ -123,6 +131,15 @@ class IGamingService {
         providerData: response.data,
       });
 
+      console.log(`[LaunchGame] Created new session:`, {
+        id: newSession._id,
+        providerSessionId: sessionId,
+        memberAccount: String(user.userId),
+        status: newSession.status,
+        startBalance: newSession.startBalance,
+      });
+
+      // 8. REGISTER WITH CALLBACK HUB
       await this.registerSessionWithHub({
         memberAccount: String(user.userId),
         providerSessionId: sessionId,
@@ -132,6 +149,7 @@ class IGamingService {
 
       return { success: true, gameUrl, balanceSent: balanceToSend };
     } catch (error) {
+      console.error(`[LaunchGame] Error:`, error);
       throw error;
     }
   }
@@ -144,7 +162,13 @@ class IGamingService {
   }) {
     try {
       const hubUrl = process.env.CALLBACK_HUB_URL;
-      const axios = require("axios");
+
+      console.log(`[RegisterWithHub] Registering session:`, {
+        memberAccount,
+        providerSessionId,
+        gameUid,
+        gameName,
+      });
 
       await axios.post(
         `${hubUrl}/internal/register`,
@@ -161,27 +185,54 @@ class IGamingService {
         },
       );
 
-      console.log(`[Launch] Session registered: ${providerSessionId}`);
+      console.log(
+        `[RegisterWithHub] Session registered successfully: ${providerSessionId}`,
+      );
     } catch (error) {
-      // Non-blocking - log but don't break game launch
       console.error(
-        "[Launch] Failed to register session with hub:",
+        "[RegisterWithHub] Failed to register session with hub:",
         error.message,
       );
+      // Non-blocking - don't break game launch
     }
   }
 
   // ── Handle provider game callback ──────────────────────────────────────────
   async handleGameCallback(callbackData) {
+    // LOG ENTRY
+    console.log(`[handleGameCallback] START:`, {
+      game_round: callbackData.game_round,
+      member_account: callbackData.member_account,
+      game_uid: callbackData.game_uid,
+      bet_amount: callbackData.bet_amount,
+      win_amount: callbackData.win_amount,
+      timestamp: new Date().toISOString(),
+    });
+
     const session = await mongoose.startSession();
     let gameSession = null;
-    let buildProviderBalanceResponse = null; // defined inside try to close over gameSession
+    let buildProviderBalanceResponse = null;
     session.startTransaction();
 
     try {
       const { game_uid, game_round, bet_amount, win_amount, game_name } =
         callbackData;
+      const memberAccount = callbackData.member_account || null;
 
+      // LOG: Looking for session
+      console.log(`[handleGameCallback] Looking for session:`, {
+        memberAccount,
+        game_uid,
+        hasCallbackSessionId: !!(
+          callbackData.session_id || callbackData.providerSessionId
+        ),
+      });
+
+      // Round amounts
+      const bet = r2(Number(bet_amount) || 0);
+      const win = r2(Number(win_amount) || 0);
+
+      // Session lookup - TIER 1 (rare, only if provider sends session ID)
       const callbackSessionId =
         callbackData.session_id ||
         callbackData.sessionId ||
@@ -191,23 +242,28 @@ class IGamingService {
         callbackData.data?.sessionId ||
         null;
 
-      const memberAccount = callbackData.member_account || null;
-
-      // Round immediately — prevents float drift in all downstream math
-      const bet = r2(Number(bet_amount) || 0);
-      const win = r2(Number(win_amount) || 0);
-
-      // ── Session lookup ─────────────────────────────────────────────────────
-      // Tier 1: exact ssoKey + status:active (original behavior)
       if (callbackSessionId) {
+        console.log(
+          `[handleGameCallback] TIER 1 lookup with sessionId: ${callbackSessionId}`,
+        );
         gameSession = await GameSession.findOne({
           providerSessionId: callbackSessionId,
           status: "active",
         }).session(session);
+
+        if (gameSession) {
+          console.log(
+            `[handleGameCallback] TIER 1 found session: ${gameSession._id}`,
+          );
+        }
       }
 
-      // Tier 2: memberAccount + gameCode + status:active (original fallback)
+      // Session lookup - TIER 2 (primary for provider callbacks)
       if (!gameSession) {
+        console.log(
+          `[handleGameCallback] TIER 2 lookup with member=${memberAccount}, game=${game_uid}`,
+        );
+
         gameSession = await GameSession.findOne({
           providerGameCode: game_uid,
           memberAccount: String(memberAccount),
@@ -215,28 +271,75 @@ class IGamingService {
         })
           .sort({ createdAt: -1 })
           .session(session);
+
+        if (gameSession) {
+          console.log(`[handleGameCallback] TIER 2 found session:`, {
+            id: gameSession._id,
+            providerSessionId: gameSession.providerSessionId,
+            providerGameCode: gameSession.providerGameCode,
+            memberAccount: gameSession.memberAccount,
+            status: gameSession.status,
+            currentBalance: gameSession.endBalance,
+            gameRound: gameSession.gameRound,
+          });
+        } else {
+          console.error(
+            `[handleGameCallback] NO SESSION FOUND for member=${memberAccount}, game=${game_uid}`,
+          );
+
+          // Log all sessions for this user for debugging
+          const allSessions = await GameSession.find({
+            memberAccount: String(memberAccount),
+            providerGameCode: game_uid,
+          }).lean();
+
+          console.error(
+            `[handleGameCallback] Existing sessions:`,
+            allSessions.map((s) => ({
+              id: s._id,
+              status: s.status,
+              createdAt: s.createdAt,
+              endBalance: s.endBalance,
+              providerSessionId: s.providerSessionId,
+            })),
+          );
+        }
       }
 
-      if (!gameSession) throw new Error("Game session not found");
+      if (!gameSession) {
+        console.error(`[handleGameCallback] FATAL: Game session not found`);
+        throw new Error("Game session not found");
+      }
 
-      // ── Persist game_round into session if changed (original behavior) ─────
+      // Update game round
       if (game_round && gameSession.gameRound !== String(game_round)) {
+        console.log(
+          `[handleGameCallback] Updating gameRound: ${gameSession.gameRound} -> ${game_round}`,
+        );
         gameSession.gameRound = String(game_round);
         await gameSession.save({ session });
       }
 
-      // ── Balance response builder — closes over gameSession ─────────────────
+      // Balance response builder
       buildProviderBalanceResponse = async () => {
         const latestWallet = await WalletService.getWalletBalance(
           gameSession.user,
         );
+        const balance = r2(latestWallet?.main || 0);
+        console.log(
+          `[handleGameCallback] buildProviderBalanceResponse returning: ${balance}`,
+        );
         return {
-          credit_amount: r2(latestWallet?.main || 0),
+          credit_amount: balance,
           timestamp: Date.now(),
         };
       };
 
-      // ── Duplicate round guard (original query — no metadata filter) ────────
+      // Duplicate check
+      console.log(
+        `[handleGameCallback] Checking duplicate for round: ${game_round}`,
+      );
+
       const duplicateHistoryQuery = {
         user: gameSession.user,
         gameRound: game_round,
@@ -249,15 +352,22 @@ class IGamingService {
       ).session(session);
 
       if (existingProcessedBet) {
+        console.log(
+          `[handleGameCallback] DUPLICATE detected for round: ${game_round}, returning existing balance`,
+        );
         await session.abortTransaction();
         return buildProviderBalanceResponse();
       }
 
-      // ── Wallet update ──────────────────────────────────────────────────────
+      // Wallet update
       const netChange = r2(win - bet);
+      console.log(
+        `[handleGameCallback] Net change: ${netChange} (bet=${bet}, win=${win})`,
+      );
 
       let walletUpdateResult = null;
       if (netChange !== 0) {
+        console.log(`[handleGameCallback] Updating wallet by ${netChange}`);
         walletUpdateResult = await WalletService.updateWallet(
           gameSession.user,
           netChange,
@@ -271,103 +381,123 @@ class IGamingService {
           },
           session,
         );
+
+        console.log(
+          `[handleGameCallback] Wallet update result:`,
+          walletUpdateResult,
+        );
       }
 
-      // Reuse wallet result — avoids a redundant DB round-trip (perf keep)
+      // Get final balance
       const wallet = walletUpdateResult
         ? { main: walletUpdateResult.newBalance }
         : await WalletService.getWalletBalance(gameSession.user);
       const realBalance = r2(wallet.main || 0);
 
+      console.log(
+        `[handleGameCallback] Final balance after update: ${realBalance}`,
+      );
+
       gameSession.endBalance = realBalance;
       await gameSession.save({ session });
 
-      // ── Betting history + turnover ─────────────────────────────────────────
+      // Betting history creation
       if (gameSession.gameRound) {
         try {
-          // Fetch game once, reuse below (perf keep)
           const fullGame = await this.getGameSafe(gameSession.game);
 
-          await BettingHistory.create(
-            [
-              {
-                user: gameSession.user,
-                gameSession: gameSession._id,
-                game: gameSession.game,
-                provider: fullGame?.brand || "Unknown",
-                category: fullGame?.category || "Slot",
-                gameName: fullGame?.game_name || game_name || "Unknown Game",
-                providerGameCode: gameSession.providerGameCode,
-                gameRound: gameSession.gameRound,
-                status: "unsettled",
-                betAmount: bet,
-                winAmount: win,
-                netResult: r2(win - bet),
-                turnoverAmount: bet,
-                currency: gameSession.currency || "BDT",
-                isFreeSpin: gameSession.isFreeSpin || false,
-                isBonusBet: gameSession.isBonusBet || false,
-                startBalance: gameSession.startBalance,
-                endBalance: gameSession.endBalance,
-                playedAt: new Date(),
-                settledAt: null,
-                metadata: {
-                  providerSessionId: gameSession.providerSessionId,
-                  sessionId: gameSession._id.toString(),
-                },
-              },
-            ],
-            { session },
+          console.log(
+            `[handleGameCallback] Creating betting history for round: ${game_round}`,
           );
 
-          // ORIGINAL: turnover is awaited (not fire-and-forget)
-          let turnoverResult = null;
+          const bettingHistoryData = {
+            user: gameSession.user,
+            gameSession: gameSession._id,
+            game: gameSession.game,
+            provider: fullGame?.brand || "Unknown",
+            category: fullGame?.category || "Slot",
+            gameName: fullGame?.game_name || game_name || "Unknown Game",
+            providerGameCode: gameSession.providerGameCode,
+            gameRound: gameSession.gameRound,
+            status: "unsettled",
+            betAmount: bet,
+            winAmount: win,
+            netResult: r2(win - bet),
+            turnoverAmount: bet,
+            currency: gameSession.currency || "BDT",
+            isFreeSpin: gameSession.isFreeSpin || false,
+            isBonusBet: gameSession.isBonusBet || false,
+            startBalance: gameSession.startBalance,
+            endBalance: gameSession.endBalance,
+            playedAt: new Date(),
+            settledAt: null,
+            metadata: {
+              providerSessionId: gameSession.providerSessionId,
+              sessionId: gameSession._id.toString(),
+            },
+          };
+
+          await BettingHistory.create([bettingHistoryData], { session });
+
+          console.log(`[handleGameCallback] Betting history created`);
+
           if (bet > 0) {
-            turnoverResult = await TurnoverTrackingService.recordBet(
+            await TurnoverTrackingService.recordBet(
               gameSession.user,
               fullGame,
               bet,
             );
-          }
-
-          // ORIGINAL: promotion turnover progress check after recordBet
-          if (bet > 0) {
-            try {
-              if (turnoverResult?.success) {
-                // turnover updated successfully
-              }
-            } catch (turnoverErr) {
-              // non-blocking — never fails the callback
-            }
+            console.log(`[handleGameCallback] Turnover recorded: ${bet}`);
           }
         } catch (err) {
           if (err?.code === 11000) {
-            // Parallel callback already handled this round
+            console.log(
+              `[handleGameCallback] Duplicate betting history, aborting`,
+            );
             await session.abortTransaction();
             return buildProviderBalanceResponse();
           }
-          // History failure must not fail the callback
+          console.error(`[handleGameCallback] Betting history error:`, err);
+          // Don't throw - continue processing
         }
       }
 
       await session.commitTransaction();
 
-      return buildProviderBalanceResponse();
+      const finalResponse = await buildProviderBalanceResponse();
+      console.log(
+        `[handleGameCallback] SUCCESS - Returning balance: ${finalResponse.credit_amount}`,
+      );
+
+      return finalResponse;
     } catch (err) {
-      console.error("========== CALLBACK ERROR ==========");
-      console.error(err);
-      console.error(err.message);
-      console.error(err.stack);
-      console.error("===================================");
+      console.error(`[handleGameCallback] ERROR:`, {
+        message: err.message,
+        stack: err.stack,
+        callbackData: callbackData,
+      });
 
       await session.abortTransaction();
 
       if (gameSession?.user) {
         try {
-          return await buildProviderBalanceResponse();
-        } catch {}
+          console.log(
+            `[handleGameCallback] Attempting emergency balance for user: ${gameSession.user}`,
+          );
+          const emergencyBalance = await buildProviderBalanceResponse();
+          console.log(
+            `[handleGameCallback] Emergency balance: ${emergencyBalance.credit_amount}`,
+          );
+          return emergencyBalance;
+        } catch (emergencyErr) {
+          console.error(
+            `[handleGameCallback] Emergency balance failed:`,
+            emergencyErr,
+          );
+        }
       }
 
+      console.error(`[handleGameCallback] Returning -1 (error)`);
       return {
         credit_amount: -1,
         error: err.message,
@@ -397,7 +527,6 @@ class IGamingService {
       if (endDate) query.createdAt.$lte = new Date(endDate);
     }
 
-    // Parallel fetch — sessions + count in one round-trip (perf keep)
     const [sessions, total] = await Promise.all([
       GameSession.find(query)
         .populate("game", "game_name brand category image_url")
@@ -421,7 +550,7 @@ class IGamingService {
     return GameSession.find({ user: userId, status: "active" })
       .populate("game", "game_name brand category image_url")
       .sort({ createdAt: -1 })
-      .lean(); // lean = ~40% less memory (perf keep)
+      .lean();
   }
 }
 
