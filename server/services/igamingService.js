@@ -45,8 +45,8 @@ class IGamingService {
   async launchGame(user, game, options = {}) {
     try {
       const providerGameCode = String(game.game_code).trim();
-      const returnUrl = `${process.env.CLIENT_URL}/casino`;
-      const callbackUrl = `${process.env.BASE_URL}/api/games/callback`;
+      const returnUrl = `https://gamebetx.live/casino`;
+      const callbackUrl = `${process.env.CALLBACK_HUB_URL}/api/games/callback`;
 
       // 1. ALWAYS USE WALLET AS BALANCE SOURCE
       const wallet = await WalletService.getWalletBalance(user._id);
@@ -122,9 +122,51 @@ class IGamingService {
         providerData: response.data,
       });
 
+      await this.registerSessionWithHub({
+        memberAccount: String(user.userId),
+        providerSessionId: sessionId,
+        gameUid: providerGameCode,
+        gameName: game.game_name,
+      });
+
       return { success: true, gameUrl, balanceSent: balanceToSend };
     } catch (error) {
       throw error;
+    }
+  }
+
+  async registerSessionWithHub({
+    memberAccount,
+    providerSessionId,
+    gameUid,
+    gameName,
+  }) {
+    try {
+      const hubUrl = process.env.CALLBACK_HUB_URL;
+      const axios = require("axios");
+
+      await axios.post(
+        `${hubUrl}/internal/register`,
+        {
+          memberAccount: String(memberAccount),
+          website: process.env.WEBSITE_NAME,
+          providerSessionId: String(providerSessionId),
+          gameUid: String(gameUid),
+          gameName: gameName || null,
+        },
+        {
+          timeout: 3000,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+
+      console.log(`[Launch] Session registered: ${providerSessionId}`);
+    } catch (error) {
+      // Non-blocking - log but don't break game launch
+      console.error(
+        "[Launch] Failed to register session with hub:",
+        error.message,
+      );
     }
   }
 
